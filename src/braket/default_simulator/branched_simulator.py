@@ -74,29 +74,30 @@ class BranchedSimulator(BaseLocalSimulator):
         if shots <= 0:
             raise ValueError("Branched simulator requires shots > 0")
 
-        # Parse the AST structure
-        ast = self.parse_program(openqasm_ir)
-
-        # Create branched interpreter
+        # Create branched interpreter and run the program
         interpreter = BranchedInterpreter()
+        context = interpreter.run(openqasm_ir.source, openqasm_ir.inputs or {})
 
-        # Initialize simulation - we'll determine qubit count during AST traversal
+        # Create a BranchedSimulation and load the context data
         simulation = self.initialize_simulation(
-            qubit_count=0,  # Will be updated during traversal
+            qubit_count=context.num_qubits,
             shots=shots,
             batch_size=batch_size,
         )
+        
+        # Load instruction sequences from context into simulation
+        simulation.load_from_branched_context(context)
 
-        # Execute with branching logic
-        results = interpreter.execute_with_branching(ast, simulation, openqasm_ir.inputs or {})
+        # Generate measurements using the simulation's existing method
+        measurements = simulation.get_measurements_as_arrays()
 
         # Create result object
         return self._create_results_obj(
-            results.get("result_types", []),
+            [],  # result_types - empty for now
             openqasm_ir,
-            results.get("simulation", []),
-            results.get("measured_qubits", []),
-            results.get("mapped_measured_qubits", []),
+            simulation,  # Pass the simulation object instead of measurements
+            list(range(context.num_qubits)),  # measured_qubits
+            list(range(context.num_qubits)),  # mapped_measured_qubits
         )
 
     @property

@@ -26,7 +26,6 @@ from braket.default_simulator.branched_simulator import BranchedSimulator
 from braket.default_simulator.branched_simulation import BranchedSimulation
 from braket.default_simulator.openqasm.branched_interpreter import BranchedInterpreter
 from braket.ir.openqasm import Program as OpenQASMProgram
-from braket.default_simulator.openqasm.branched_interpreter import some_function
 
 
 class TestBranchedSimulatorOperatorsOpenQASM:
@@ -41,8 +40,6 @@ class TestBranchedSimulatorOperatorsOpenQASM:
         h q[0];       // Put qubit 0 in superposition
         cnot q[0], q[1];  // Create Bell state
         """
-
-        some_function()
 
         program = OpenQASMProgram(source=qasm_source, inputs={})
         simulator = BranchedSimulator()
@@ -2850,7 +2847,7 @@ class TestBranchedSimulatorOperatorsOpenQASM:
         # Test boolean default value
         flag_var = sim.get_variable(path_idx, "flag")
         assert flag_var is not None, f"Boolean variable 'flag' not found for path {path_idx}"
-        assert flag_var.val == False, f"Expected default boolean value False, got {flag_var.val}"
+        assert not flag_var.val, f"Expected default boolean value False, got {flag_var.val}"
 
         # Test array default value
         numbers_var = sim.get_variable(path_idx, "numbers")
@@ -3340,8 +3337,8 @@ class TestBranchedSimulatorOperatorsOpenQASM:
         zero_val_var = sim.get_variable(path_idx, "zero_val")
         nonzero_val_var = sim.get_variable(path_idx, "nonzero_val")
 
-        assert flag_var.val == False, f"Expected flag=False, got {flag_var.val}"
-        assert another_flag_var.val == True, (
+        assert not flag_var.val, f"Expected flag=False, got {flag_var.val}"
+        assert another_flag_var.val, (
             f"Expected another_flag=True, got {another_flag_var.val}"
         )
         assert zero_val_var.val == 0, f"Expected zero_val=0, got {zero_val_var.val}"

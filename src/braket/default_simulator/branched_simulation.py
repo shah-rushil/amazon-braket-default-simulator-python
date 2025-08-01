@@ -249,3 +249,60 @@ class BranchedSimulation(Simulation):
     def get_current_state_vector(self, path_idx: int) -> np.ndarray:
         """Get the current state vector for a specific path."""
         return self._get_path_state(path_idx)
+
+    def load_from_branched_context(self, context):
+        """Load instruction sequences from a BranchedProgramContext"""
+        active_paths = context.get_active_paths()
+        
+        # Clear existing state
+        self._instruction_sequences = []
+        self._active_paths = []
+        self._shots_per_path = []
+        self._measurements = []
+        self._variables = []
+        
+        # Update qubit count
+        self._qubit_count = context.num_qubits
+        
+        # Calculate shots per path
+        shots_per_path = self._shots // len(active_paths) if active_paths else self._shots
+        remaining_shots = self._shots % len(active_paths) if active_paths else 0
+        
+        # Load each path
+        for i, path_id in enumerate(active_paths):
+            try:
+                # Get instruction sequence for this path
+                instructions = context.get_instruction_sequence_for_path(path_id)
+                
+                # Calculate shots for this path
+                path_shots = shots_per_path + (1 if i < remaining_shots else 0)
+                
+                # Add to simulation
+                self._instruction_sequences.append(instructions)
+                self._active_paths.append(len(self._instruction_sequences) - 1)
+                self._shots_per_path.append(path_shots)
+                self._measurements.append({})  # Empty measurements dict
+                self._variables.append({})  # Empty variables dict
+                
+            except Exception as e:
+                print(f"Error loading path {path_id}: {e}")
+                # Add empty path for failed paths
+                self._instruction_sequences.append([])
+                self._active_paths.append(len(self._instruction_sequences) - 1)
+                self._shots_per_path.append(0)
+                self._measurements.append({})
+                self._variables.append({})
+
+    def get_measurements_as_arrays(self):
+        """Get measurements in the format expected by the simulator (list of arrays)"""
+        samples = self.retrieve_samples()
+        measurements = []
+        
+        for sample in samples:
+            # Convert to binary representation
+            binary_str = format(sample, f'0{self._qubit_count}b')
+            # Convert to array of integers (little-endian: rightmost bit is qubit 0)
+            measurement = [int(bit) for bit in reversed(binary_str)]
+            measurements.append(measurement)
+            
+        return measurements
