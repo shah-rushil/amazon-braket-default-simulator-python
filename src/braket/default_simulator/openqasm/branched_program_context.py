@@ -50,7 +50,7 @@ from .program_context import AbstractProgramContext, ProgramContext
 class BranchedProgramContext(AbstractProgramContext):
     """
     A program context that manages multiple execution paths for branched simulation.
-    
+
     This context maintains separate ProgramContext instances for each branch,
     allowing different variable values and circuit states per execution path.
     Instead of using circuits, it stores instruction sequences for each path.
@@ -65,18 +65,21 @@ class BranchedProgramContext(AbstractProgramContext):
                 If None, creates a new ProgramContext.
         """
         # Don't call super().__init__() since we manage state per path
-        
+
         # Create the initial branch context
         if initial_context is None:
             initial_context = ProgramContext()
-        
+
         # Store contexts for each branch path
         self._branch_contexts: dict[int, AbstractProgramContext] = {0: initial_context}
         self._active_paths: list[int] = [0]
-        
+
         # Store instruction sequences for each path
         self._instruction_sequences: dict[int, list[Operation]] = {0: []}
-        
+
+        # Store measurement results for each path
+        self._measurements: dict[int, dict[int, list[int]]] = {0: {}}
+
         # Initialize minimal state needed for the branched context
         self.num_qubits = initial_context.num_qubits
         self.inputs = initial_context.inputs.copy()
@@ -84,7 +87,9 @@ class BranchedProgramContext(AbstractProgramContext):
     @property
     def circuit(self) -> Circuit:
         """Circuit property not used in branched context - use instruction sequences instead."""
-        raise NotImplementedError("BranchedProgramContext uses instruction sequences, not circuits. Use get_instruction_sequence_for_path() instead.")
+        raise NotImplementedError(
+            "BranchedProgramContext uses instruction sequences, not circuits. Use get_instruction_sequence_for_path() instead."
+        )
 
     def get_instruction_sequence_for_path(self, path_id: int) -> list[Operation]:
         """Get the instruction sequence for a specific path."""
@@ -106,29 +111,35 @@ class BranchedProgramContext(AbstractProgramContext):
     def create_branch(self, source_path: int) -> int:
         """
         Create a new branch by copying an existing path.
-        
+
         Args:
             source_path (int): The path ID to copy from.
-            
+
         Returns:
             int: The new path ID.
         """
         if source_path not in self._branch_contexts:
             raise ValueError(f"Source path {source_path} does not exist")
-        
+
         # Find next available path ID
         new_path_id = max(self._branch_contexts.keys()) + 1
-        
+
         # Deep copy the source context
         source_context = self._branch_contexts[source_path]
         new_context = self._deep_copy_context(source_context)
-        
+
         self._branch_contexts[new_path_id] = new_context
         self._active_paths.append(new_path_id)
-        
+
         # Copy the instruction sequence
         self._instruction_sequences[new_path_id] = self._instruction_sequences[source_path].copy()
-        
+
+        # Copy the measurement tracking
+        if source_path in self._measurements:
+            self._measurements[new_path_id] = deepcopy(self._measurements[source_path])
+        else:
+            self._measurements[new_path_id] = {}
+
         return new_path_id
 
     def _deep_copy_context(self, context: AbstractProgramContext) -> AbstractProgramContext:
@@ -139,7 +150,7 @@ class BranchedProgramContext(AbstractProgramContext):
         else:
             # For other context types, create a basic ProgramContext
             new_context = ProgramContext()
-        
+
         # Copy all the tables and state
         new_context.symbol_table = deepcopy(context.symbol_table)
         new_context.variable_table = deepcopy(context.variable_table)
@@ -148,7 +159,7 @@ class BranchedProgramContext(AbstractProgramContext):
         new_context.qubit_mapping = deepcopy(context.qubit_mapping)
         new_context.inputs = deepcopy(context.inputs)
         new_context.num_qubits = context.num_qubits
-        
+
         return new_context
 
     def remove_path(self, path_id: int) -> None:
@@ -219,93 +230,190 @@ class BranchedProgramContext(AbstractProgramContext):
         for path_id in self._active_paths:
             self._branch_contexts[path_id].add_result(result)
 
-    def add_measure(self, target: tuple[int], classical_targets: Optional[Iterable[int]] = None) -> None:
+    def add_measure(
+        self, target: tuple[int], classical_targets: Optional[Iterable[int]] = None
+    ) -> None:
         """Add measurement with branching based on quantum state probabilities."""
         from braket.default_simulator.state_vector_simulation import StateVectorSimulation
-        
+
         # Get current active paths
         original_active_paths = self._active_paths.copy()
         paths_to_remove = []
-        
+
         # Process each active path
         for path_id in original_active_paths:
             try:
                 # Get the instruction sequence for this path
                 instructions = self._instruction_sequences[path_id]
-                
+
                 # Create a simulation to evolve the state
                 sim = StateVectorSimulation(self.num_qubits, shots=1, batch_size=1)
-                
+
                 # Evolve the state with all instructions up to this point
                 if instructions:
                     sim.evolve(instructions)
-                
+
                 # Calculate measurement probabilities for the target qubit
                 # For simplicity, assume single qubit measurement for now
                 if len(target) == 1:
                     qubit_idx = target[0]
                     probs = self._get_measurement_probabilities(sim.state_vector, qubit_idx)
-                    
+
                     # Determine if we need to branch based on probabilities
-                    prob_0, prob_1 = probs[0], probs[1]
-                    
+                    prob_0, prob_1 = probs
+
                     # If both outcomes are possible (neither probability is 0), create branches
                     if prob_0 > 1e-10 and prob_1 > 1e-10:
                         # Create a new path for outcome 1
                         new_path_id = self.create_branch(path_id)
-                        
+
+                        # Add measurement operators to instruction sequences to collapse the state
+                        from braket.default_simulator.gate_operations import Measure
+
+                        measure_0 = Measure(target, result=0)
+                        measure_1 = Measure(target, result=1)
+
+                        # Add the measurement projections to each path's instruction sequence
+                        self._instruction_sequences[path_id].append(measure_0)
+                        self._instruction_sequences[new_path_id].append(measure_1)
+
                         # Update classical variables for each outcome
-                        self._update_measurement_outcome(path_id, classical_targets, 0)
-                        self._update_measurement_outcome(new_path_id, classical_targets, 1)
-                            
-                        print(f"Branched path {path_id} -> outcomes 0 (path {path_id}) and 1 (path {new_path_id})")
+                        self._update_measurement_outcome(path_id, classical_targets, 0, qubit_idx)
+                        self._update_measurement_outcome(
+                            new_path_id, classical_targets, 1, qubit_idx
+                        )
+
+                        print(
+                            f"Branched path {path_id} -> outcomes 0 (path {path_id}) and 1 (path {new_path_id})"
+                        )
                         print(f"Probabilities: P(0)={prob_0:.3f}, P(1)={prob_1:.3f}")
-                        
+
                     else:
                         # Deterministic outcome
                         outcome = 0 if prob_1 < 1e-10 else 1
-                        self._update_measurement_outcome(path_id, classical_targets, outcome)
+
+                        # Add measurement operator to collapse the state
+                        from braket.default_simulator.gate_operations import Measure
+
+                        measure_op = Measure(target, result=outcome)
+                        self._instruction_sequences[path_id].append(measure_op)
+
+                        self._update_measurement_outcome(
+                            path_id, classical_targets, outcome, qubit_idx
+                        )
                         print(f"Deterministic measurement on path {path_id}: outcome {outcome}")
-                
+
                 else:
                     # Multi-qubit measurement - for now, just use the first qubit
                     # TODO: Implement proper multi-qubit measurement
                     print("Multi-qubit measurement not fully implemented, using first qubit")
                     self._update_measurement_outcome(path_id, classical_targets, 0)
-                        
+
             except Exception as e:  # noqa: PERF203
                 print(f"Error processing measurement for path {path_id}: {e}")
                 import traceback
+
                 traceback.print_exc()
                 paths_to_remove.append(path_id)
-        
+
         # Remove any failed paths
         for path_id in paths_to_remove:
             self.remove_path(path_id)
 
-    def _get_measurement_probabilities(self, state_vector: np.ndarray, qubit_idx: int) -> np.ndarray:
+    def _get_measurement_probabilities(
+        self, state_vector: np.ndarray, qubit_idx: int
+    ) -> np.ndarray:
         """Calculate measurement probabilities for a specific qubit"""
         # Reshape state to tensor form
         state_tensor = np.reshape(state_vector, [2] * self.num_qubits)
-        
+
         # Extract slices for |0⟩ and |1⟩ states of the target qubit
         slice_0 = np.take(state_tensor, 0, axis=qubit_idx)
         slice_1 = np.take(state_tensor, 1, axis=qubit_idx)
-        
+
         # Calculate probabilities
         prob_0 = np.sum(np.abs(slice_0) ** 2)
         prob_1 = np.sum(np.abs(slice_1) ** 2)
-        
+
         return np.array([prob_0, prob_1])
-    
-    def _update_measurement_outcome(self, path_id: int, classical_targets: Optional[Iterable[int]], outcome: int):
+
+    def _update_measurement_outcome(
+        self, path_id: int, classical_targets: Optional[Iterable[int]], outcome: int, qubit_idx: int
+    ):
         """Update classical variables with measurement outcome for a specific path"""
-        if classical_targets is not None:
-            # Add the measurement to the specific path's context
-            self._branch_contexts[path_id].add_measure((outcome,), classical_targets)
-        
-        # Note: The actual classical variable update would need to be handled
-        # by the interpreter when it processes the measurement statement
+        # Store the measurement result in our tracking system
+        if path_id not in self._measurements:
+            self._measurements[path_id] = {}
+
+        # Store the measurement outcome for the measured qubit
+        # We need to get the actual qubit index from the measurement
+        # For now, we'll assume it's the first qubit being measured
+        if qubit_idx not in self._measurements[path_id]:
+            self._measurements[path_id][qubit_idx] = []
+        self._measurements[path_id][qubit_idx].append(outcome)
+
+        print(f"Path {path_id}: Stored measurement outcome {outcome} for qubit {qubit_idx}")
+
+    def update_measurement_values(
+        self, target_variable, qubits: tuple[int], targets: Optional[Iterable[int]]
+    ):
+        """Update classical variables with measurement outcomes for each path"""
+        from .parser.openqasm_ast import ArrayLiteral, IntegerLiteral
+
+        # Get all active paths
+        active_paths = self.get_active_paths()
+
+        for path_id in active_paths:
+            # Get the measurement result for this path
+            measurement_outcomes = self._get_measurement_outcomes_for_path(path_id, qubits, targets)
+
+            # Create the appropriate literal value based on the measurement outcomes
+            if len(measurement_outcomes) == 1:
+                # Single measurement result
+                measurement_value = IntegerLiteral(measurement_outcomes[0])
+            else:
+                # Multiple measurement results - create array
+                measurement_literals = [IntegerLiteral(outcome) for outcome in measurement_outcomes]
+                measurement_value = ArrayLiteral(measurement_literals)
+
+            # Update the variable for this specific path
+            self._update_value_for_path(path_id, target_variable, measurement_value)
+
+    def _get_measurement_outcomes_for_path(
+        self, path_id: int, qubits: tuple[int], targets: Optional[Iterable[int]]
+    ):
+        """Get measurement outcomes for a specific path"""
+        # Get the measurement results from the context for this path
+        # This is a simplified implementation - in practice, the measurement outcomes
+        # would be determined by the quantum state evolution and branching logic
+
+        # For now, we'll extract the outcomes from the path's measurement history
+        # This assumes the context stores measurement results per path
+        if hasattr(self, "_measurements") and path_id in self._measurements:
+            outcomes = []
+            for qubit_idx in qubits:
+                if qubit_idx in self._measurements[path_id]:
+                    # Get the most recent measurement for this qubit
+                    outcomes.append(self._measurements[path_id][qubit_idx][-1])
+                else:
+                    outcomes.append(0)  # Default to 0 if no measurement recorded
+            return outcomes
+        else:
+            # Fallback: return 0 for all qubits
+            return [0] * len(qubits)
+
+    def _update_value_for_path(self, path_id: int, target_variable, measurement_value):
+        """Update a variable's value for a specific path"""
+        # Temporarily set only this path as active to update the variable
+        original_active_paths = self._active_paths.copy()
+        self._active_paths = [path_id]
+
+        try:
+            # Update the variable using the existing update_value method
+            self.update_value(target_variable, measurement_value)
+        finally:
+            # Restore the original active paths
+            self._active_paths = original_active_paths
 
     # Override methods that need to work with all active paths' contexts
     def declare_variable(
@@ -448,10 +556,10 @@ class BranchedProgramContext(AbstractProgramContext):
         """String representation showing all branch contexts."""
         lines = [f"BranchedProgramContext with {len(self._branch_contexts)} paths:"]
         lines.append(f"Active paths: {self._active_paths}")
-        
+
         for path_id, context in self._branch_contexts.items():
             lines.append(f"\n--- Path {path_id} ---")
             lines.append(f"Instructions: {len(self._instruction_sequences[path_id])}")
             lines.append(str(context))
-        
+
         return "\n".join(lines)

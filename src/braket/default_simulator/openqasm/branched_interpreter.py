@@ -109,7 +109,7 @@ from .parser.openqasm_parser import parse
 class BranchedInterpreter:
     """
     A branched interpreter that handles multiple execution paths for mid-circuit measurements.
-    
+
     This interpreter uses a BranchedProgramContext to manage separate contexts for each
     execution path, allowing different classical variable values per path while handling
     branching logic for conditionals, loops, and measurements.
@@ -488,6 +488,8 @@ class BranchedInterpreter:
                     self._uses_advanced_language_features = True
                     target_indices = convert_range_def_to_range(self.visit(elem))
                     targets.extend(target_indices)
+                elif isinstance(elem, Identifier):
+                    targets.append(self.visit(elem))
                 else:
                     target_idx = elem.value
                     targets.append(target_idx)
@@ -499,43 +501,19 @@ class BranchedInterpreter:
             raise ValueError(
                 f"Number of qubits ({len(qubits)}) does not match number of provided classical targets ({len(targets)})"
             )
-        
+
         # Handle measurement with branching based on quantum probabilities
         self._handle_measurement_branching(qubits, targets, node.target)
 
     def _handle_measurement_branching(self, qubits, targets, target_variable):
         """Handle measurement with branching based on quantum state probabilities"""
-        # This is where we need to integrate with BranchedSimulation
-        # For now, we'll add the measurement to all active paths
-        # TODO: Implement proper branching based on measurement probabilities
+        # Add the measurement to the context, which handles branching internally
         self.context.add_measure(qubits, targets)
-        
-        # If there's a target variable, we need to update it with measurement results
-        # In a full implementation, this would branch based on measurement probabilities
-        if target_variable and hasattr(target_variable, 'name'):
-            # For now, set to 0 (this should be based on actual measurement outcome)
-            from .parser.openqasm_ast import IntegerLiteral
-            measurement_result = IntegerLiteral(0)  # Placeholder
-            self.context.update_value(target_variable, measurement_result)
 
-    def execute_with_branching(self, ast, simulation, inputs=None):
-        """Execute the AST with branching simulation support"""
-        if inputs:
-            self.context.load_inputs(inputs)
-        
-        # Set up the simulation reference for measurement branching
-        self._simulation = simulation
-        
-        # Execute the AST
-        self.visit(ast)
-        
-        # Return results in the format expected by the simulator
-        return {
-            "result_types": [],
-            "simulation": simulation,
-            "measured_qubits": [],
-            "mapped_measured_qubits": []
-        }
+        # If there's a target variable, we need to update it with measurement results
+        # The measurement results are now stored per path in the context
+        if target_variable and hasattr(target_variable, "name"):
+            self.context.update_measurement_values(target_variable, qubits, targets)
 
     @visit.register
     def _(self, node: ClassicalAssignment) -> None:
@@ -565,33 +543,33 @@ class BranchedInterpreter:
     def _(self, node: BranchingStatement) -> None:
         """Handle branching statements with path-specific logic"""
         self._uses_advanced_language_features = True
-        
+
         # Store the original active paths
         original_active_paths = self.context.get_active_paths()
         paths_to_remove = []
-        
+
         # For each active path, evaluate the condition and determine which block to execute
         for path_id in original_active_paths:
             # Temporarily set this path as the only active path to evaluate condition
             self.context._active_paths = [path_id]
-            
+
             try:
                 condition = cast_to(BooleanLiteral, self.visit(deepcopy(node.condition)))
                 block = node.if_block if condition.value else node.else_block
-                
+
                 # Execute the appropriate block for this path
                 if block:
                     for statement in block:
                         self.visit(deepcopy(statement))
-                        
+
             except Exception as e:
                 # If evaluation fails for this path, mark it for removal
                 self.logger.warning(f"Path {path_id} failed during branching: {e}")
                 paths_to_remove.append(path_id)
-        
+
         # Restore all active paths (minus any that failed)
         self.context._active_paths = [p for p in original_active_paths if p not in paths_to_remove]
-        
+
         # Remove failed paths
         for path_id in paths_to_remove:
             self.context.remove_path(path_id)
@@ -600,28 +578,28 @@ class BranchedInterpreter:
     def _(self, node: ForInLoop) -> None:
         """Handle for loops with path-specific logic"""
         self._uses_advanced_language_features = True
-        
+
         # Store the original active paths
         original_active_paths = self.context.get_active_paths()
-        
+
         for path_id in original_active_paths:
             # Temporarily set this path as the only active path
             self.context._active_paths = [path_id]
-            
+
             # Evaluate the loop range for this specific path
             index = self.visit(deepcopy(node.set_declaration))
             if isinstance(index, RangeDefinition):
                 index_values = [IntegerLiteral(x) for x in convert_range_def_to_range(index)]
             else:  # DiscreteSet
                 index_values = index.values
-            
+
             block = node.block
             for i in index_values:
                 block_copy = deepcopy(block)
                 with self.context.enter_scope():
                     self.context.declare_variable(node.identifier.name, node.type, i)
                     self.visit(block_copy)
-        
+
         # Restore all active paths
         self.context._active_paths = original_active_paths
 
@@ -629,16 +607,16 @@ class BranchedInterpreter:
     def _(self, node: WhileLoop) -> None:
         """Handle while loops with path-specific logic"""
         self._uses_advanced_language_features = True
-        
+
         # Store the original active paths
         original_active_paths = self.context.get_active_paths()
         paths_to_remove = []
-        
+
         # For each path, execute the while loop independently
         for path_id in original_active_paths:
             # Temporarily set this path as the only active path
             self.context._active_paths = [path_id]
-            
+
             try:
                 # Execute while loop for this specific path
                 while True:
@@ -646,15 +624,15 @@ class BranchedInterpreter:
                     if not condition.value:
                         break
                     self.visit(deepcopy(node.block))
-                    
+
             except Exception as e:
                 # If evaluation fails for this path, mark it for removal
                 self.logger.warning(f"Path {path_id} failed during while loop: {e}")
                 paths_to_remove.append(path_id)
-        
+
         # Restore all active paths (minus any that failed)
         self.context._active_paths = [p for p in original_active_paths if p not in paths_to_remove]
-        
+
         # Remove failed paths
         for path_id in paths_to_remove:
             self.context.remove_path(path_id)

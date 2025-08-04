@@ -84,12 +84,12 @@ class BranchedSimulator(BaseLocalSimulator):
             shots=shots,
             batch_size=batch_size,
         )
-        
+
         # Load instruction sequences from context into simulation
         simulation.load_from_branched_context(context)
 
         # Generate measurements using the simulation's existing method
-        measurements = simulation.get_measurements_as_arrays()
+        simulation.get_measurements_as_arrays()
 
         # Create result object
         return self._create_results_obj(
