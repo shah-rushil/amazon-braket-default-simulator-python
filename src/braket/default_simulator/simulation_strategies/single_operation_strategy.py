@@ -37,9 +37,9 @@ def apply_operations(
     for op in operations:
         if op.__class__.__name__ == "Measure":
             # Reshape to 1D for Measure.apply, then back to tensor form
-            state_1d = np.reshape(state, 2 ** len(state.shape))
+            state_1d = np.reshape(result, 2 ** len(result.shape))
             state_1d = op.apply(state_1d)  # type: ignore
-            state = np.reshape(state_1d, state.shape)
+            result = np.reshape(state_1d, state.shape)
         else:
             num_ctrl = len(op._ctrl_modifiers)
             _, needs_swap = multiply_matrix(
