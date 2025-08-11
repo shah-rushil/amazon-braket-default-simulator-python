@@ -1999,6 +1999,59 @@ class TestBranchedSimulatorOperatorsOpenQASM:
         total = sum(counter.values())
         assert total == 100, f"Expected 100 measurements, got {total}"
 
+    def test_11_7_reset(self):
+        qasm_source = """
+            qubit[4] q;
+            x q[1];
+            x q[2];
+            reset q[1];
+            """
+
+        program = OpenQASMProgram(source=qasm_source, inputs={})
+        simulator = BranchedSimulator()
+        result = simulator.run_openqasm(program, shots=100)
+
+        # Global gate control analysis:
+        # - h q1; h q2; creates superposition on both qubits: (|00⟩ + |01⟩ + |10⟩ + |11⟩)/2
+        # - ctrl @ s q1, q2; applies controlled-S gate (S = phase gate = diag(1, i))
+        # - When q1=1, S gate applied to q2, adding phase i to |1⟩ component
+        # - Expected state: (|00⟩ + |01⟩ + |10⟩ + i|11⟩)/2
+        # - Measurement probabilities: all four outcomes with equal 25% probability
+
+        measurements = result.measurements
+        counter = Counter(["".join(measurement) for measurement in measurements])
+
+        expected_outcomes = {"0010"}
+        assert set(counter.keys()) == expected_outcomes
+
+    def test_11_8_reset_2(self):
+        qasm_source = """
+            qubit[12] qs;
+            for uint i in [0:11] {
+                h qs[i];
+            }
+            for uint i in [0:11] {
+                reset qs[i];
+            }
+            """
+
+        program = OpenQASMProgram(source=qasm_source, inputs={})
+        simulator = BranchedSimulator()
+        result = simulator.run_openqasm(program, shots=100)
+
+        # Global gate control analysis:
+        # - h q1; h q2; creates superposition on both qubits: (|00⟩ + |01⟩ + |10⟩ + |11⟩)/2
+        # - ctrl @ s q1, q2; applies controlled-S gate (S = phase gate = diag(1, i))
+        # - When q1=1, S gate applied to q2, adding phase i to |1⟩ component
+        # - Expected state: (|00⟩ + |01⟩ + |10⟩ + i|11⟩)/2
+        # - Measurement probabilities: all four outcomes with equal 25% probability
+
+        measurements = result.measurements
+        counter = Counter(["".join(measurement) for measurement in measurements])
+
+        expected_outcomes = {"000000000000"}
+        assert set(counter.keys()) == expected_outcomes
+
     def test_11_9_global_gate_control(self):
         """11.9 Global gate control"""
         qasm_source = """

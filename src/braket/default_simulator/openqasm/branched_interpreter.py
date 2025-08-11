@@ -22,7 +22,7 @@ from braket.default_simulator.branched_simulation import (
     FunctionDefinition,
     GateDefinition,
 )
-from braket.default_simulator.gate_operations import BRAKET_GATES, GPhase
+from braket.default_simulator.gate_operations import BRAKET_GATES, GPhase, Reset
 from braket.default_simulator.openqasm._helpers.builtins import BuiltinConstants
 from braket.default_simulator.openqasm.parser.openqasm_ast import (
     AliasStatement,
@@ -357,9 +357,8 @@ class BranchedInterpreter:
             return None
 
         elif isinstance(node, QuantumReset):
-            raise NotImplementedError(
-                "Reset functionality not implemented in python branched simulator"
-            )
+            self._handle_reset(sim, node)
+            return None
 
         elif isinstance(node, RangeDefinition):
             return self._handle_range(sim, node)
@@ -898,6 +897,14 @@ class BranchedInterpreter:
                     s.modifiers = ctrl_modifiers + pow_modifiers + s.modifiers
                     s.qubits = ctrl_qubits[idx] + s.qubits
         return bodies
+
+    def _handle_reset(self, sim: BranchedSimulation, node: QuantumReset) -> None:
+        qubits = self._evaluate_qubits(sim, node.qubits)
+        for idx, qs in qubits.items():
+            if isinstance(qs, int):
+                qs = [qs]
+            for q in qs:
+                sim._instruction_sequences[idx].append(Reset([q]))
 
     def _handle_measurement(
         self, sim: BranchedSimulation, node: QuantumMeasurementStatement
