@@ -5,19 +5,12 @@ from braket.devices import LocalSimulator
 
 qasm_source = """
 OPENQASM 3.0;
-bit __bit_2__;
-bit __bit_5__;
-bit __bit_8__;
-bit __bit_11__;
-bit __bit_14__;
-bit __bit_17__;
-bit __bit_20__;
 qubit[11] __qubits__;
-bit[7] mcm = "0000000";
-h __qubits__[10];
+h __qubits__[0];
 
-cnot __qubits__[10], __qubits__[9];
-
+for int i in [1:10]{
+    cnot __qubits__[0], __qubits__[i];
+}
 """
 
 program = OpenQASMProgram(source=qasm_source, inputs={})
