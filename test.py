@@ -14,9 +14,9 @@ bit __bit_17__;
 bit __bit_20__;
 qubit[11] __qubits__;
 bit[7] mcm = "0000000";
-h __qubits__[0];
+h __qubits__[10];
 
-cnot __qubits__[0], __qubits__[1];
+cnot __qubits__[10], __qubits__[9];
 
 """
 
