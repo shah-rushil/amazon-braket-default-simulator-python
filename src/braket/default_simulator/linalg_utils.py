@@ -161,81 +161,81 @@ def _apply_single_qubit_gate_large(  # pragma: no cover
 
 
 @nb.njit(parallel=True, fastmath=True, cache=True, nogil=True)
+def _apply_x_gate_large(  # pragma: no cover
+    state: np.ndarray, matrix: np.ndarray, target: int, out: np.ndarray
+) -> tuple[np.ndarray, bool]:
+    """Applies single gates using bit masking."""
+    _a, b, c, _d = matrix.flat
+    target_bit = state.ndim - target - 1
+    target_mask = np.int64(1 << target_bit)
+    shifted_target_mask = np.int64(target_mask - 1)
+
+    half_size = state.size >> 1
+
+    for i in nb.prange(half_size):
+        idx0 = (i & ~(shifted_target_mask)) << 1 | (i & (shifted_target_mask))
+        idx1 = idx0 | target_mask
+
+        out.flat[idx0] = b * state.flat[idx1]
+        out.flat[idx1] = c * state.flat[idx0]
+
+    return out, True
+
+
+@nb.njit(parallel=True, fastmath=True, cache=True, nogil=True)
 def _apply_cnot_large(
     state: np.ndarray, control: int, target: int, out: np.ndarray
 ) -> tuple[np.ndarray, bool]:  # pragma: no cover
     """CNOT optimization path with numba."""
     n_qubits = state.ndim
     total_size = state.size
-    iterations = total_size >> 2 # Since we fix the target and control qubits, the iterations is only a fourth
+    iterations = total_size >> 2
     target_bit_pos = n_qubits - target - 1
     control_bit_pos = n_qubits - control - 1
 
     control_stride = 1 << control_bit_pos
     target_stride = 1 << target_bit_pos
 
-    target_jump = target_stride if target_bit_pos != n_qubits - 1 else 0
-    control_jump = control_stride if control_bit_pos != n_qubits - 1 else 0
-
     if control_bit_pos > target_bit_pos:
-        should_target_jump = target_jump or 1
-        should_control_jump = control_jump or 1
-        if control_bit_pos - target_bit_pos >= (n_qubits - target_bit_pos) // 2: # If the control is more then half way between 0 qubit and the target
-            should_control_jump = max(should_control_jump // 2, 1)
+        larger_bit_pos = control_bit_pos
+        smaller_bit_pos = target_bit_pos
+        larger_jump = control_stride if control_bit_pos != n_qubits - 1 else 0
+        smaller_jump = target_stride if target_bit_pos != n_qubits - 1 else 0
 
-        # when the control qubits are off by 1, there seems to be a "super" jump at each of the target_stride lengths
-        if control_bit_pos - target_bit_pos == 1:
-            combined_jump = target_jump + control_jump
-            for i in nb.prange(iterations):
-                idx0 = control_stride + i + (i // should_target_jump) * combined_jump
-                idx1 = idx0 + target_stride
-
-                temp = state.flat[idx0]
-                state.flat[idx0] = state.flat[idx1]
-                state.flat[idx1] = temp
-        else:
-            for i in nb.prange(iterations):
-                idx0 = (
-                    control_stride
-                    + i
-                    + (i // should_target_jump) * target_jump
-                    + (i // should_control_jump) * control_jump
-                ) # control qubit is 1, target qubit is 0
-                idx1 = idx0 + target_stride # control qubit is 1, target qubit is 1
-
-                temp = state.flat[idx0]
-                state.flat[idx0] = state.flat[idx1]
-                state.flat[idx1] = temp
+        swap_offset = target_stride
     else:
-        should_target_jump = target_jump or 1
-        should_control_jump = control_jump or 1
+        larger_bit_pos = target_bit_pos
+        smaller_bit_pos = control_bit_pos
 
-        should_target_jump = max(should_target_jump // 2, 1)
+        larger_jump = target_stride if target_bit_pos != n_qubits - 1 else 0
+        smaller_jump = control_stride if control_bit_pos != n_qubits - 1 else 0
 
-        if target_bit_pos - control_bit_pos == 1:
-            combined_jump = target_jump + control_jump
-            for i in nb.prange(iterations):
-                idx0 = control_stride + i + (i // should_target_jump) * combined_jump
-                idx1 = idx0 + target_stride
+        swap_offset = target_stride
 
-                temp = state.flat[idx0]
-                state.flat[idx0] = state.flat[idx1]
-                state.flat[idx1] = temp
-        else:
-            for i in nb.prange(iterations):
-                idx0 = (
-                    control_stride
-                    + i
-                    + (i // should_target_jump) * target_jump # Step function where a step is target_jump size
-                    + (i // should_control_jump) * control_jump
-                )
-                idx1 = idx0 + target_stride
+    should_smaller_jump = smaller_jump or 1
+    should_larger_jump = larger_jump or 1
 
-                temp = state.flat[idx0]
-                state.flat[idx0] = state.flat[idx1]
-                state.flat[idx1] = temp
+    if larger_bit_pos - smaller_bit_pos >= (n_qubits - smaller_bit_pos) // 2:
+        should_larger_jump = max(should_larger_jump // 2, 1)
 
+    if larger_bit_pos - smaller_bit_pos == 1:
+        combined_jump = smaller_jump + larger_jump
+        for i in nb.prange(iterations):
+            idx0 = control_stride + i + (i // should_smaller_jump) * combined_jump
+            idx1 = idx0 + swap_offset
 
+            state.flat[idx0], state.flat[idx1] = state.flat[idx1], state.flat[idx0]
+    else:
+        for i in nb.prange(iterations):
+            idx0 = (
+                control_stride
+                + i
+                + (i // should_smaller_jump) * smaller_jump
+                + (i // should_larger_jump) * larger_jump
+            )
+            idx1 = idx0 + swap_offset
+
+            state.flat[idx0], state.flat[idx1] = state.flat[idx1], state.flat[idx0]
     return state, False
 
 
@@ -276,19 +276,25 @@ def _apply_swap_large(
     """Swap gate implementation using bit manipulation."""
     n_qubits = state.ndim
     total_size = 1 << n_qubits
+    iterations = total_size >> 2
 
-    mask_0 = 1 << (n_qubits - 1 - qubit_0)
-    mask_1 = 1 << (n_qubits - 1 - qubit_1)
+    pos_0 = n_qubits - 1 - qubit_0
+    pos_1 = n_qubits - 1 - qubit_1
 
-    for i in nb.prange(total_size):
-        bit_0 = (i & mask_0) != 0
-        bit_1 = (i & mask_1) != 0
+    if pos_0 > pos_1:
+        pos_0, pos_1 = pos_1, pos_0
 
-        if bit_0 != bit_1:
-            j = i ^ mask_0 ^ mask_1
+    mask_0 = 1 << pos_0
+    mask_1 = 1 << pos_1
 
-            if i < j:
-                state.flat[i], state.flat[j] = state.flat[j], state.flat[i]
+    for i in nb.prange(iterations):
+        base = i + ((i >> pos_0) << pos_0)
+        base += (base >> pos_1) << pos_1
+
+        idx0 = base | mask_1
+        idx1 = base | mask_0
+
+        state.flat[idx0], state.flat[idx1] = state.flat[idx1], state.flat[idx0]
 
     return state, False
 
@@ -386,17 +392,18 @@ def _apply_two_qubit_gate_large(
 
     mask_0 = 1 << (n_qubits - 1 - target0)
     mask_1 = 1 << (n_qubits - 1 - target1)
+    mask_0_or_mask_1 = mask_0 | mask_1
 
     for i in nb.prange(total_size):
         out_basis = ((i & mask_0) != 0) * 2 + ((i & mask_1) != 0)
 
-        base = i & ~(mask_0 | mask_1)
+        base = i & ~(mask_0_or_mask_1)
 
         result = (
             matrix[out_basis, 0] * state.flat[base]
             + matrix[out_basis, 1] * state.flat[base | mask_1]
             + matrix[out_basis, 2] * state.flat[base | mask_0]
-            + matrix[out_basis, 3] * state.flat[base | mask_0 | mask_1]
+            + matrix[out_basis, 3] * state.flat[base | mask_0_or_mask_1]
         )
 
         out.flat[i] = result
@@ -496,7 +503,10 @@ def _apply_single_qubit_gate(
     n_qubits = state.ndim
 
     if n_qubits > _QUBIT_THRESHOLD:
-        return _apply_single_qubit_gate_large(state, matrix, target, out)
+        if np.allclose(matrix, np.array([[0, 1], [1, 0]])):
+            return _apply_x_gate_large(state, matrix, target, out)
+        else:
+            return _apply_single_qubit_gate_large(state, matrix, target, out)
     else:
         return _apply_single_qubit_gate_small(state, matrix, target, out)
 
